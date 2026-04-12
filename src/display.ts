@@ -38,12 +38,14 @@ export class DisplayServer {
 
   async renderText(text: string, title?: string, theme = "dark"): Promise<string> {
     const html = buildHtml(await marked(text), title, theme);
-    const jpeg = await htmlToJpeg(html);
+    return this.renderHtml(html);
+  }
 
+  async renderHtml(html: string): Promise<string> {
+    const jpeg = await htmlToJpeg(html);
     const filename = `snapshot-${Date.now()}.jpg`;
     const filePath = path.join(this.snapshotDir, filename);
     await fs.writeFile(filePath, jpeg);
-
     return `http://${this.getLocalIP()}:${this.port}/${filename}`;
   }
 

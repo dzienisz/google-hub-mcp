@@ -8,6 +8,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { CastClient } from "./cast.js";
 import { DisplayServer } from "./display.js";
+import { fetchAiDevsStats, buildDashboardHtml } from "./aidevs.js";
 
 const HUB_IP = process.env.NEST_HUB_IP ?? "";
 const DISPLAY_PORT = parseInt(process.env.DISPLAY_PORT ?? "3333", 10);
@@ -97,6 +98,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         "Get the current playback status and volume information from the Nest Hub.",
       inputSchema: { type: "object", properties: {} },
     },
+    {
+      name: "cast_aidevs_dashboard",
+      description:
+        "Fetch AI Devs 4 course progress stats and display a live dashboard on the Nest Hub. Uses the AIDEVS_API_KEY from environment.",
+      inputSchema: { type: "object", properties: {} },
+    },
   ],
 }));
 
@@ -148,6 +155,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "get_status": {
         const status = await cast.getStatus();
         return text("```json\n" + JSON.stringify(status, null, 2) + "\n```");
+      }
+
+      case "cast_aidevs_dashboard": {
+        const apiKey = process.env.AIDEVS_API_KEY ?? "";
+        if (!apiKey) throw new Error("AIDEVS_API_KEY is not set in .env");
+        const stats = await fetchAiDevsStats(apiKey);
+        const html = buildDashboardHtml(stats);
+        const url = await display.renderHtml(html);
+        await cast.castMedia(url, "image/jpeg");
+        return text(`AI Devs dashboard live: ${stats.points} pts · ${stats.secrets} secrets · ${stats.days.length} days`);
       }
 
       default:
