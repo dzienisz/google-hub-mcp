@@ -203,6 +203,19 @@ async function main() {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // Exit when the MCP client disconnects — the HTTP display server keeps the
+  // event loop alive, so without this the process outlives the client as an
+  // orphan holding DISPLAY_PORT and blocking every future instance. The SDK's
+  // stdio transport doesn't signal stdin EOF, so watch stdin directly.
+  const shutdown = () => {
+    display.stop();
+    process.exit(0);
+  };
+  server.onclose = shutdown;
+  process.stdin.on("end", shutdown);
+  process.stdin.on("close", shutdown);
+
   console.error(`[google-hub-mcp] Server ready. Display server on port ${DISPLAY_PORT}.`);
 }
 
