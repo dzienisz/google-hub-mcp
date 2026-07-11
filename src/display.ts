@@ -9,16 +9,49 @@ export class DisplayServer {
   private port: number;
   private server: http.Server | null = null;
   private snapshotDir: string;
+  private livePages = new Map<string, string | (() => string)>();
+  private jsonEndpoints = new Map<string, () => Promise<unknown>>();
 
   constructor(port: number) {
     this.port = port;
     this.snapshotDir = path.join(os.tmpdir(), "google-hub-mcp");
   }
 
+  setLivePage(urlPath: string, content: string | (() => string)): string {
+    this.livePages.set(urlPath, content);
+    return `http://${this.getLocalIP()}:${this.port}${urlPath}`;
+  }
+
+  registerJsonEndpoint(urlPath: string, handler: () => Promise<unknown>): void {
+    this.jsonEndpoints.set(urlPath, handler);
+  }
+
   async start(): Promise<void> {
     await fs.mkdir(this.snapshotDir, { recursive: true });
 
-    this.server = http.createServer((req, res) => {
+    this.server = http.createServer(async (req, res) => {
+      const urlPath = (req.url ?? "/").split("?")[0];
+
+      if (this.jsonEndpoints.has(urlPath)) {
+        try {
+          const data = await this.jsonEndpoints.get(urlPath)!();
+          res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+          res.end(JSON.stringify(data));
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: String(err) }));
+        }
+        return;
+      }
+
+      if (this.livePages.has(urlPath)) {
+        const content = this.livePages.get(urlPath)!;
+        const html = typeof content === "function" ? content() : content;
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(html);
+        return;
+      }
+
       const filePath = path.join(this.snapshotDir, path.basename(req.url ?? "/"));
       fs.readFile(filePath)
         .then((data) => {
@@ -34,6 +67,25 @@ export class DisplayServer {
     return new Promise((resolve) => {
       this.server!.listen(this.port, "0.0.0.0", () => resolve());
     });
+  }
+
+  async renderUrl(url: string): Promise<string> {
+    const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1024, height: 600 });
+      await page.goto(url, { waitUntil: "networkidle0" });
+      // Let CSS transitions settle (dashboard progress bars animate in over 0.6s)
+      await new Promise((r) => setTimeout(r, 800));
+      const screenshot = await page.screenshot({ type: "jpeg", quality: 92 });
+      const jpeg = Buffer.from(screenshot);
+      const filename = `snapshot-${Date.now()}.jpg`;
+      const filePath = path.join(this.snapshotDir, filename);
+      await fs.writeFile(filePath, jpeg);
+      return `http://${this.getLocalIP()}:${this.port}/${filename}`;
+    } finally {
+      await browser.close();
+    }
   }
 
   async renderText(text: string, title?: string, theme = "dark"): Promise<string> {

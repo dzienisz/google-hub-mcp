@@ -1,5 +1,12 @@
 #!/usr/bin/env node
-import "dotenv/config";
+import { config } from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
+
+// MCP clients launch this server with an arbitrary cwd, so resolve .env
+// relative to the project root instead of process.cwd().
+config({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".env") });
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -8,7 +15,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { CastClient } from "./cast.js";
 import { DisplayServer } from "./display.js";
-import { fetchAiDevsStats, buildDashboardHtml } from "./aidevs.js";
+import { fetchAiDevsStats, buildInteractiveDashboardHtml } from "./aidevs.js";
 
 const HUB_IP = process.env.NEST_HUB_IP ?? "";
 const DISPLAY_PORT = parseInt(process.env.DISPLAY_PORT ?? "3333", 10);
@@ -56,7 +63,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "cast_url",
       description:
-        "Cast any web URL to the Nest Hub display. The page will be rendered full-screen.",
+        "Cast any web URL to the Nest Hub display as a full-screen snapshot (the page is rendered server-side and shown as an image).",
       inputSchema: {
         type: "object",
         required: ["url"],
@@ -134,8 +141,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "cast_url": {
         const { url } = args as { url: string };
-        await cast.castUrl(url);
-        return text(`Casting to Nest Hub: ${url}`);
+        // The Default Media Receiver can't render HTML — screenshot the page and cast that.
+        const snapshotUrl = await display.renderUrl(url);
+        await cast.castMedia(snapshotUrl, "image/jpeg");
+        return text(`Casting snapshot of ${url} to Nest Hub.`);
       }
 
       case "cast_image": {
@@ -158,13 +167,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "cast_aidevs_dashboard": {
-        const apiKey = process.env.AIDEVS_API_KEY ?? "";
-        if (!apiKey) throw new Error("AIDEVS_API_KEY is not set in .env");
-        const stats = await fetchAiDevsStats(apiKey);
-        const html = buildDashboardHtml(stats);
-        const url = await display.renderHtml(html);
-        await cast.castMedia(url, "image/jpeg");
-        return text(`AI Devs dashboard live: ${stats.points} pts · ${stats.secrets} secrets · ${stats.days.length} days`);
+        const key = process.env.AIDEVS_API_KEY ?? "";
+        if (!key) throw new Error("AIDEVS_API_KEY is not set in .env");
+        const stats = await fetchAiDevsStats(key);
+        // The Default Media Receiver can't render HTML, so screenshot the
+        // live page and cast it as an image.
+        const dashUrl = display.setLivePage("/dashboard", () => buildInteractiveDashboardHtml());
+        const snapshotUrl = await display.renderUrl(dashUrl);
+        await cast.castMedia(snapshotUrl, "image/jpeg");
+        return text(`AI Devs dashboard cast: ${stats.points} pts · ${stats.secrets} secrets · ${stats.days.length} days (live page: ${dashUrl})`);
       }
 
       default:
@@ -181,6 +192,15 @@ function text(msg: string) {
 
 async function main() {
   await display.start();
+
+  const apiKey = process.env.AIDEVS_API_KEY ?? "";
+  // Expose only what the dashboard renders — the raw API response echoes the API key.
+  display.registerJsonEndpoint("/api/aidevs", async () => {
+    const { points, secrets, days, email } = await fetchAiDevsStats(apiKey);
+    return { points, secrets, days, email };
+  });
+  display.setLivePage("/dashboard", () => buildInteractiveDashboardHtml());
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`[google-hub-mcp] Server ready. Display server on port ${DISPLAY_PORT}.`);

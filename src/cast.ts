@@ -52,28 +52,6 @@ export class CastClient {
     });
   }
 
-  async castUrl(url: string): Promise<void> {
-    const client = await this.connect();
-    return new Promise((resolve, reject) => {
-      client.launch(DefaultMediaReceiver, (err: Error, player: any) => {
-        if (err) {
-          client.close();
-          return reject(err);
-        }
-        const media = {
-          contentId: url,
-          contentType: "text/html",
-          streamType: "LIVE",
-        };
-        player.load(media, { autoplay: true }, (err: Error) => {
-          client.close();
-          if (err) return reject(err);
-          resolve();
-        });
-      });
-    });
-  }
-
   async castMedia(url: string, contentType: string): Promise<void> {
     const client = await this.connect();
     return new Promise((resolve, reject) => {
