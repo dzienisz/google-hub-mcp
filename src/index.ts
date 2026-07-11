@@ -1,5 +1,12 @@
 #!/usr/bin/env node
-import "dotenv/config";
+import { config } from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
+
+// MCP clients launch this server with an arbitrary cwd, so resolve .env
+// relative to the project root instead of process.cwd().
+config({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".env") });
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -8,6 +15,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { CastClient } from "./cast.js";
 import { DisplayServer } from "./display.js";
+import { fetchAiDevsStats, buildInteractiveDashboardHtml } from "./aidevs.js";
 
 const HUB_IP = process.env.NEST_HUB_IP ?? "";
 const DISPLAY_PORT = parseInt(process.env.DISPLAY_PORT ?? "3333", 10);
@@ -55,7 +63,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "cast_url",
       description:
-        "Cast any web URL to the Nest Hub display. The page will be rendered full-screen.",
+        "Cast any web URL to the Nest Hub display as a full-screen snapshot (the page is rendered server-side and shown as an image).",
       inputSchema: {
         type: "object",
         required: ["url"],
@@ -97,6 +105,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         "Get the current playback status and volume information from the Nest Hub.",
       inputSchema: { type: "object", properties: {} },
     },
+    {
+      name: "cast_aidevs_dashboard",
+      description:
+        "Fetch AI Devs 4 course progress stats and display a live dashboard on the Nest Hub. Uses the AIDEVS_API_KEY from environment.",
+      inputSchema: { type: "object", properties: {} },
+    },
   ],
 }));
 
@@ -127,8 +141,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "cast_url": {
         const { url } = args as { url: string };
-        await cast.castUrl(url);
-        return text(`Casting to Nest Hub: ${url}`);
+        // The Default Media Receiver can't render HTML — screenshot the page and cast that.
+        const snapshotUrl = await display.renderUrl(url);
+        await cast.castMedia(snapshotUrl, "image/jpeg");
+        return text(`Casting snapshot of ${url} to Nest Hub.`);
       }
 
       case "cast_image": {
@@ -150,6 +166,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return text("```json\n" + JSON.stringify(status, null, 2) + "\n```");
       }
 
+      case "cast_aidevs_dashboard": {
+        const key = process.env.AIDEVS_API_KEY ?? "";
+        if (!key) throw new Error("AIDEVS_API_KEY is not set in .env");
+        const stats = await fetchAiDevsStats(key);
+        // The Default Media Receiver can't render HTML, so screenshot the
+        // live page and cast it as an image.
+        const dashUrl = display.setLivePage("/dashboard", () => buildInteractiveDashboardHtml());
+        const snapshotUrl = await display.renderUrl(dashUrl);
+        await cast.castMedia(snapshotUrl, "image/jpeg");
+        return text(`AI Devs dashboard cast: ${stats.points} pts · ${stats.secrets} secrets · ${stats.days.length} days (live page: ${dashUrl})`);
+      }
+
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -164,8 +192,30 @@ function text(msg: string) {
 
 async function main() {
   await display.start();
+
+  const apiKey = process.env.AIDEVS_API_KEY ?? "";
+  // Expose only what the dashboard renders — the raw API response echoes the API key.
+  display.registerJsonEndpoint("/api/aidevs", async () => {
+    const { points, secrets, days, email } = await fetchAiDevsStats(apiKey);
+    return { points, secrets, days, email };
+  });
+  display.setLivePage("/dashboard", () => buildInteractiveDashboardHtml());
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // Exit when the MCP client disconnects — the HTTP display server keeps the
+  // event loop alive, so without this the process outlives the client as an
+  // orphan holding DISPLAY_PORT and blocking every future instance. The SDK's
+  // stdio transport doesn't signal stdin EOF, so watch stdin directly.
+  const shutdown = () => {
+    display.stop();
+    process.exit(0);
+  };
+  server.onclose = shutdown;
+  process.stdin.on("end", shutdown);
+  process.stdin.on("close", shutdown);
+
   console.error(`[google-hub-mcp] Server ready. Display server on port ${DISPLAY_PORT}.`);
 }
 

@@ -1,0 +1,302 @@
+const TOTAL_DAYS = 25;
+const TOTAL_POINTS = 25;
+const TOTAL_SECRETS = 30;
+
+export interface AiDevsStats {
+  points: number;
+  secrets: number;
+  days: string[];
+  mysteries: string[];
+  email: string;
+}
+
+export async function fetchAiDevsStats(apiKey: string): Promise<AiDevsStats> {
+  const res = await fetch("https://hub.ag3nts.org/stats", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ key: apiKey }),
+  });
+  if (!res.ok) throw new Error(`Stats API error: ${res.status}`);
+  const data = await res.json() as AiDevsStats;
+  return data;
+}
+
+export function buildInteractiveDashboardHtml(): string {
+  const serverTime = new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1024">
+<meta http-equiv="refresh" content="60">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Lexend+Deca:wght@400;600;700&family=DM+Mono:wght@400;500&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1024px; height: 600px; overflow: hidden;
+    background: #0a0a0a;
+    background-image: radial-gradient(rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 24px 24px;
+    color: #fff;
+    font-family: 'Lexend Deca', system-ui, sans-serif;
+    display: flex; flex-direction: column;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 28px;
+    background: #111;
+    border-bottom: 1.5px solid #2a2a2a;
+    flex-shrink: 0;
+  }
+  .logo-area { display: flex; align-items: center; gap: 10px; }
+  .logo-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: #75f86f;
+    box-shadow: 0 0 8px rgba(117,248,111,0.7);
+    transition: opacity 0.3s;
+  }
+  .logo-dot.refreshing { opacity: 0.3; animation: pulse 0.8s ease-in-out infinite alternate; }
+  @keyframes pulse { to { opacity: 1; } }
+  .logo-text { font-size: 13px; font-weight: 700; color: #75f86f; letter-spacing: 0.08em; text-transform: uppercase; }
+  .header-stats { display: flex; gap: 28px; align-items: center; }
+  .stat { text-align: center; }
+  .stat-val { font-family: 'DM Mono', monospace; font-size: 22px; font-weight: 500; color: #fff; line-height: 1; }
+  .stat-val span { color: #444; font-size: 16px; }
+  .stat-label { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 3px; }
+  .stat-sep { width: 1px; height: 32px; background: #2a2a2a; }
+  .clock { font-family: 'DM Mono', monospace; font-size: 12px; color: #444; }
+
+  /* ── Body ── */
+  .body { flex: 1; display: grid; grid-template-columns: 1fr 340px; overflow: hidden; min-height: 0; }
+
+  /* ── Mission grid ── */
+  .grid-section { padding: 20px 24px; display: flex; flex-direction: column; gap: 12px; border-right: 1px solid #1a1a1a; min-height: 0; }
+  .section-label { font-size: 10px; font-weight: 600; color: #444; text-transform: uppercase; letter-spacing: 0.1em; flex-shrink: 0; }
+  .mission-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    grid-template-rows: repeat(5, 1fr);
+    gap: 6px;
+    flex: 1;
+    min-height: 0;
+  }
+  .cell {
+    border-radius: 6px; border: 1px solid #222;
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+    transition: transform 0.15s, box-shadow 0.15s;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+  .cell:active, .cell.pressed { transform: scale(0.92); }
+  .cell.done {
+    background: linear-gradient(135deg, rgba(117,248,111,0.15), rgba(117,248,111,0.05));
+    border-color: rgba(117,248,111,0.35);
+    box-shadow: 0 0 8px rgba(117,248,111,0.08);
+  }
+  .cell.done:active, .cell.done.pressed { box-shadow: 0 0 20px rgba(117,248,111,0.35); }
+  .cell.pending { background: #111; border-color: #1e1e1e; }
+  .day-num { font-family: 'DM Mono', monospace; font-size: 12px; color: #333; position: absolute; top: 5px; left: 7px; }
+  .cell.done .day-num { color: rgba(117,248,111,0.5); }
+  .check { font-size: 18px; color: #75f86f; }
+
+  /* ── Stats panel ── */
+  .stats-section { padding: 20px 24px; display: flex; flex-direction: column; gap: 18px; overflow: hidden; }
+  .progress-block { display: flex; flex-direction: column; gap: 7px; }
+  .progress-header { display: flex; justify-content: space-between; align-items: baseline; }
+  .progress-title { font-size: 11px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: 0.08em; }
+  .progress-value { font-family: 'DM Mono', monospace; font-size: 13px; color: #aaa; }
+  .progress-track { height: 6px; background: #1a1a1a; border-radius: 3px; overflow: hidden; }
+  .progress-fill {
+    height: 100%; border-radius: 3px;
+    background: linear-gradient(90deg, #75f86f, #4ad645);
+    box-shadow: 0 0 6px rgba(117,248,111,0.4);
+    transition: width 0.6s ease;
+  }
+  .progress-fill.secrets { background: linear-gradient(90deg, #f8c46f, #e5a830); box-shadow: 0 0 6px rgba(248,196,111,0.4); }
+  .progress-fill.mission { background: linear-gradient(90deg, #6fb8f8, #3a90e5); box-shadow: 0 0 6px rgba(111,184,248,0.4); }
+  .divider { height: 1px; background: #1a1a1a; flex-shrink: 0; }
+  .recent-block { flex: 1; overflow: hidden; }
+  .recent-title { font-size: 10px; font-weight: 600; color: #444; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 10px; }
+  .recent-grid { display: flex; flex-wrap: wrap; gap: 5px; }
+  .recent-badge {
+    font-family: 'DM Mono', monospace; font-size: 11px;
+    padding: 3px 8px; border-radius: 4px;
+    background: rgba(117,248,111,0.08);
+    border: 1px solid rgba(117,248,111,0.2);
+    color: #75f86f;
+  }
+  .footer-note { font-size: 10px; color: #333; font-family: 'DM Mono', monospace; margin-top: auto; flex-shrink: 0; }
+
+  /* ── Day detail overlay ── */
+  .overlay {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.65);
+    backdrop-filter: blur(4px);
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.2s;
+    z-index: 100;
+  }
+  .overlay.visible { opacity: 1; pointer-events: all; }
+  .overlay-card {
+    background: #141414;
+    border: 1px solid #2a2a2a;
+    border-radius: 16px;
+    padding: 32px 48px;
+    text-align: center;
+    min-width: 240px;
+  }
+  .overlay-day { font-family: 'DM Mono', monospace; font-size: 64px; font-weight: 500; line-height: 1; }
+  .overlay-label { font-size: 11px; color: #555; text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 16px; }
+  .overlay-status { font-size: 18px; margin-top: 12px; }
+  .overlay-status.done { color: #75f86f; }
+  .overlay-status.pending { color: #444; }
+  .overlay-dismiss { font-size: 10px; color: #333; font-family: 'DM Mono', monospace; margin-top: 20px; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="logo-area">
+      <div class="logo-dot" id="logo-dot"></div>
+      <div class="logo-text">AI Devs 4 · Centrala</div>
+    </div>
+    <div class="header-stats">
+      <div class="stat">
+        <div class="stat-val" id="pts">—<span>/${TOTAL_POINTS}</span></div>
+        <div class="stat-label">Points</div>
+      </div>
+      <div class="stat-sep"></div>
+      <div class="stat">
+        <div class="stat-val" id="sec">—<span>/${TOTAL_SECRETS}</span></div>
+        <div class="stat-label">Secrets</div>
+      </div>
+      <div class="stat-sep"></div>
+      <div class="stat">
+        <div class="stat-val" id="days-hd">—<span>/${TOTAL_DAYS}</span></div>
+        <div class="stat-label">Days</div>
+      </div>
+      <div class="stat-sep"></div>
+      <div class="clock" id="clock">${serverTime}</div>
+    </div>
+  </header>
+
+  <div class="body">
+    <div class="grid-section">
+      <div class="section-label">Mission Map</div>
+      <div class="mission-grid" id="mission-grid"></div>
+    </div>
+    <div class="stats-section" id="stats-section">
+      <div class="progress-block">
+        <div class="progress-header"><span class="progress-title">Points</span><span class="progress-value" id="pts-val">—</span></div>
+        <div class="progress-track"><div class="progress-fill" id="pts-bar" style="width:0%"></div></div>
+      </div>
+      <div class="progress-block">
+        <div class="progress-header"><span class="progress-title">Secrets</span><span class="progress-value" id="sec-val">—</span></div>
+        <div class="progress-track"><div class="progress-fill secrets" id="sec-bar" style="width:0%"></div></div>
+      </div>
+      <div class="progress-block">
+        <div class="progress-header"><span class="progress-title">Mission</span><span class="progress-value" id="mis-val">—</span></div>
+        <div class="progress-track"><div class="progress-fill mission" id="mis-bar" style="width:0%"></div></div>
+      </div>
+      <div class="divider"></div>
+      <div class="recent-block">
+        <div class="recent-title">Completed Days</div>
+        <div class="recent-grid" id="recent-grid"></div>
+      </div>
+      <div class="footer-note" id="footer-note">hub.ag3nts.org</div>
+    </div>
+  </div>
+
+  <div class="overlay" id="overlay">
+    <div class="overlay-card">
+      <div class="overlay-label">Mission Day</div>
+      <div class="overlay-day" id="overlay-day">—</div>
+      <div class="overlay-status" id="overlay-status"></div>
+      <div class="overlay-dismiss">tap anywhere to dismiss</div>
+    </div>
+  </div>
+
+  <script>
+    const TOTAL_DAYS = ${TOTAL_DAYS}, TOTAL_POINTS = ${TOTAL_POINTS}, TOTAL_SECRETS = ${TOTAL_SECRETS};
+
+    // Live clock
+    function tick() {
+      const now = new Date();
+      document.getElementById('clock').textContent =
+        now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    }
+    tick();
+    setInterval(tick, 1000);
+
+    // Overlay
+    const overlay = document.getElementById('overlay');
+    overlay.addEventListener('click', () => overlay.classList.remove('visible'));
+
+    function showDay(day, done) {
+      document.getElementById('overlay-day').textContent = String(day).padStart(2, '0');
+      const st = document.getElementById('overlay-status');
+      st.textContent = done ? '✔  Completed' : '○  Not yet';
+      st.className = 'overlay-status ' + (done ? 'done' : 'pending');
+      overlay.classList.add('visible');
+      clearTimeout(overlay._timer);
+      overlay._timer = setTimeout(() => overlay.classList.remove('visible'), 3000);
+    }
+
+    // Render
+    function render(stats) {
+      const done = new Set(stats.days.map(Number));
+      const ptsPct  = Math.round((stats.points  / TOTAL_POINTS)  * 100);
+      const secPct  = Math.round((stats.secrets / TOTAL_SECRETS) * 100);
+      const misPct  = Math.round((done.size      / TOTAL_DAYS)    * 100);
+
+      document.getElementById('pts').innerHTML = stats.points + '<span>/' + TOTAL_POINTS + '</span>';
+      document.getElementById('sec').innerHTML = stats.secrets + '<span>/' + TOTAL_SECRETS + '</span>';
+      document.getElementById('days-hd').innerHTML = done.size + '<span>/' + TOTAL_DAYS + '</span>';
+      document.getElementById('pts-val').textContent = stats.points + '/' + TOTAL_POINTS + ' · ' + ptsPct + '%';
+      document.getElementById('sec-val').textContent = stats.secrets + '/' + TOTAL_SECRETS + ' · ' + secPct + '%';
+      document.getElementById('mis-val').textContent = done.size + '/' + TOTAL_DAYS + ' · ' + misPct + '%';
+      document.getElementById('pts-bar').style.width = ptsPct + '%';
+      document.getElementById('sec-bar').style.width = secPct + '%';
+      document.getElementById('mis-bar').style.width = misPct + '%';
+      document.getElementById('footer-note').textContent = 'hub.ag3nts.org · ' + stats.email.split('@')[0];
+
+      const grid = document.getElementById('mission-grid');
+      grid.innerHTML = '';
+      for (let i = 1; i <= TOTAL_DAYS; i++) {
+        const isDone = done.has(i);
+        const cell = document.createElement('div');
+        cell.className = 'cell ' + (isDone ? 'done' : 'pending');
+        cell.innerHTML = '<span class="day-num">' + i + '</span>' + (isDone ? '<span class="check">✔</span>' : '');
+        cell.addEventListener('pointerdown', () => cell.classList.add('pressed'));
+        cell.addEventListener('pointerup', () => { cell.classList.remove('pressed'); showDay(i, isDone); });
+        cell.addEventListener('pointerleave', () => cell.classList.remove('pressed'));
+        grid.appendChild(cell);
+      }
+
+      const recent = document.getElementById('recent-grid');
+      recent.innerHTML = Array.from(done).sort((a,b) => a-b)
+        .map(d => '<span class="recent-badge">Day ' + d + '</span>').join('');
+    }
+
+    // Data fetch
+    const dot = document.getElementById('logo-dot');
+    async function refresh() {
+      dot.classList.add('refreshing');
+      try {
+        const data = await fetch('/api/aidevs').then(r => r.json());
+        render(data);
+      } catch(e) { console.error('refresh failed', e); }
+      dot.classList.remove('refreshing');
+    }
+
+    refresh();
+    setInterval(refresh, 30000);
+  </script>
+</body>
+</html>`;
+}
