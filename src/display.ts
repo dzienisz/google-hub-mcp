@@ -123,7 +123,8 @@ async function htmlToJpeg(html: string): Promise<Buffer> {
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1024, height: 600 });
-    await page.setContent(html, { waitUntil: "networkidle0" });
+    // Puppeteer 24.4x no longer accepts networkidle* for setContent; "load" still waits for images/fonts
+    await page.setContent(html, { waitUntil: "load" });
     const screenshot = await page.screenshot({ type: "jpeg", quality: 92 });
     return Buffer.from(screenshot);
   } finally {
