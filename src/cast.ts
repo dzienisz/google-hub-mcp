@@ -36,19 +36,41 @@ export class CastClient {
     });
   }
 
-  private connect(): Promise<any> {
+  private async connect(): Promise<any> {
+    if (!this.host) {
+      throw new Error(
+        "NEST_HUB_IP is not set. Use the discover_hub tool to find your device IP, then set it in .env"
+      );
+    }
+    try {
+      return await this.connectOnce();
+    } catch (err: any) {
+      // A dozing Hub can miss the first ARP lookup; one retry after a short pause usually succeeds
+      if (err?.code !== "EHOSTUNREACH" && err?.code !== "ETIMEDOUT") throw err;
+      await new Promise((r) => setTimeout(r, 1000));
+      return this.connectOnce();
+    }
+  }
+
+  private connectOnce(): Promise<any> {
     return new Promise((resolve, reject) => {
-      if (!this.host) {
-        reject(
-          new Error(
-            "NEST_HUB_IP is not set. Use the discover_hub tool to find your device IP, then set it in .env"
-          )
-        );
-        return;
-      }
       const client = new Client();
-      client.connect(this.host, () => resolve(client));
-      client.on("error", (err: Error) => reject(err));
+      let connected = false;
+      // The OS connect timeout is ~75 s; fail fast so an offline Hub errors in ~11 s with the retry
+      const timer = setTimeout(() => {
+        client.close();
+        reject(Object.assign(new Error(`Timed out connecting to ${this.host}:8009`), { code: "ETIMEDOUT" }));
+      }, 5000);
+      client.connect(this.host, () => {
+        connected = true;
+        clearTimeout(timer);
+        resolve(client);
+      });
+      client.on("error", (err: Error) => {
+        clearTimeout(timer);
+        if (!connected) client.close();
+        reject(err);
+      });
     });
   }
 
