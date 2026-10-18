@@ -35,6 +35,7 @@ The server exposes six tools to Claude Code:
 - Node.js 18+
 - Google Nest Hub (1st or 2nd gen) or Nest Hub Max on the **same Wi-Fi** as your Mac
 - Your Mac's firewall must allow inbound connections on `DISPLAY_PORT` (default `3333`)
+  - If that port is already taken (e.g. another Claude Code session is running this server), the display server falls back to the next free port (`3334`, `3335`, … up to 9 above, then any free port). The startup log on stderr shows the port in use. The macOS application firewall allows by app (`node`), not by port, so this normally needs no extra setup — but if you filter by port, open the range too.
 
 ---
 

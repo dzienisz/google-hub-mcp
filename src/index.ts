@@ -191,7 +191,7 @@ function text(msg: string) {
 }
 
 async function main() {
-  await display.start();
+  const displayPort = await display.start();
 
   const apiKey = process.env.AIDEVS_API_KEY ?? "";
   // Expose only what the dashboard renders — the raw API response echoes the API key.
@@ -206,8 +206,8 @@ async function main() {
 
   // Exit when the MCP client disconnects — the HTTP display server keeps the
   // event loop alive, so without this the process outlives the client as an
-  // orphan holding DISPLAY_PORT and blocking every future instance. The SDK's
-  // stdio transport doesn't signal stdin EOF, so watch stdin directly.
+  // orphan holding a display port. The SDK's stdio transport doesn't signal
+  // stdin EOF, so watch stdin directly.
   const shutdown = () => {
     display.stop();
     process.exit(0);
@@ -216,7 +216,8 @@ async function main() {
   process.stdin.on("end", shutdown);
   process.stdin.on("close", shutdown);
 
-  console.error(`[google-hub-mcp] Server ready. Display server on port ${DISPLAY_PORT}.`);
+  const fallback = displayPort === DISPLAY_PORT ? "" : ` (port ${DISPLAY_PORT} was in use)`;
+  console.error(`[google-hub-mcp] Server ready. Display server on port ${displayPort}${fallback}.`);
 }
 
 main().catch((err) => {
