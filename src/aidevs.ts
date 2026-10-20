@@ -169,7 +169,7 @@ ${mode === "cast" ? `<script src="${CAF_RECEIVER_SDK}"></script>` : `<meta http-
 </style>
 </head>
 <body>
-  <header>
+${mode === "cast" ? `  <!-- CAF expects a media element in the page even when no media is played -->\n  <video hidden muted></video>\n` : ""}  <header>
     <div class="logo-area">
       <div class="logo-dot" id="logo-dot"></div>
       <div class="logo-text">AI Devs 4 · Centrala</div>
@@ -258,9 +258,11 @@ ${mode === "cast" ? `<script src="${CAF_RECEIVER_SDK}"></script>` : `<meta http-
 
     // Render
     function render(stats) {
-      // Coerce everything: in cast mode any sender on the LAN can push a message
-      const points = Number(stats.points) || 0, secrets = Number(stats.secrets) || 0;
-      const done = new Set((Array.isArray(stats.days) ? stats.days : []).map(Number));
+      // Validate everything: in cast mode any sender on the LAN can push a message
+      const count = (v, max) => { const n = Number(v); return Number.isFinite(n) ? Math.min(Math.max(n, 0), max) : 0; };
+      const points = count(stats.points, TOTAL_POINTS), secrets = count(stats.secrets, TOTAL_SECRETS);
+      const done = new Set((Array.isArray(stats.days) ? stats.days : [])
+        .map(Number).filter((d) => Number.isInteger(d) && d >= 1 && d <= TOTAL_DAYS));
       const ptsPct  = Math.round((points    / TOTAL_POINTS)  * 100);
       const secPct  = Math.round((secrets   / TOTAL_SECRETS) * 100);
       const misPct  = Math.round((done.size / TOTAL_DAYS)    * 100);
@@ -343,6 +345,7 @@ function castDataSource(): string {
     options.customNamespaces = { [NS]: cast.framework.system.MessageType.JSON };
     options.disableIdleTimeout = true;
     options.skipPlayersLoad = true;
-    options.touchScreenOptimizedApp = true;
+    options.uiConfig = new cast.framework.ui.UiConfig();
+    options.uiConfig.touchScreenOptimizedApp = true;
     context.start(options);`;
 }

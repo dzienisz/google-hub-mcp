@@ -27,8 +27,11 @@ const cast = new CastClient(HUB_IP);
 const display = new DisplayServer(DISPLAY_PORT);
 
 let live: { session: CustomAppSession; timer: NodeJS.Timeout } | null = null;
+// Bumped by every stop/start, so a launch that resolves after a newer one (or a stop_cast) is discarded
+let liveGeneration = 0;
 
 function stopLive(): void {
+  liveGeneration++;
   if (!live) return;
   clearInterval(live.timer);
   live.session.close();
@@ -38,7 +41,12 @@ function stopLive(): void {
 /** Launch the receiver and keep pushing fresh stats to it while this server runs. */
 async function startLiveDashboard(apiKey: string) {
   stopLive();
+  const generation = liveGeneration;
   const session = await cast.launchCustomApp(CAST_APP_ID, DASHBOARD_NAMESPACE);
+  if (generation !== liveGeneration) {
+    session.close();
+    throw new Error("Dashboard launch was superseded by a newer cast or stop_cast");
+  }
   const push = async () => {
     // Send only what the dashboard renders; the raw API response echoes the API key
     const { points, secrets, days, email } = await fetchAiDevsStats(apiKey);
@@ -56,7 +64,13 @@ async function startLiveDashboard(apiKey: string) {
     if (live?.session === session) live = null;
   });
   live = { session, timer };
-  return push();
+  try {
+    return await push();
+  } catch (err) {
+    // Don't leave the receiver on "waiting for data…" with a refresh timer behind a failed tool call
+    await session.stopApp();
+    throw err;
+  }
 }
 
 const server = new Server(

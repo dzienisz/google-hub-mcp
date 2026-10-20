@@ -4,6 +4,11 @@ import { Bonjour } from "bonjour-service";
 const require = createRequire(import.meta.url);
 const { Client, DefaultMediaReceiver, Application, JsonController } = require("castv2-client");
 
+/** castv2 nulls its socket once the connection closes, after which close() throws. */
+function closeClient(client: any): void {
+  if (client.client?.socket) client.close();
+}
+
 export interface DiscoveredDevice {
   name: string;
   host: string;
@@ -14,10 +19,17 @@ export class CustomAppSession {
   private closed = false;
   private closeHandlers: Array<() => void> = [];
 
-  constructor(private client: any, private channel: any) {}
+  constructor(private client: any, private channel: any, private sessionId: string) {}
 
   get isClosed(): boolean {
     return this.closed;
+  }
+
+  /** Stop the receiver app on the Hub (back to the ambient screen), then close the connection. */
+  async stopApp(): Promise<void> {
+    if (this.closed) return;
+    await new Promise<void>((resolve) => this.client.receiver.stop(this.sessionId, () => resolve()));
+    this.close();
   }
 
   send(data: unknown): void {
@@ -35,7 +47,7 @@ export class CustomAppSession {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.client.close();
+    closeClient(this.client);
     for (const handler of this.closeHandlers) handler();
   }
 }
@@ -86,21 +98,28 @@ export class CastClient {
   private connectOnce(): Promise<any> {
     return new Promise((resolve, reject) => {
       const client = new Client();
-      let connected = false;
+      let settled = false;
+      const fail = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        closeClient(client);
+        reject(err);
+      };
       // The OS connect timeout is ~75 s; fail fast so an offline Hub errors in ~11 s with the retry
       const timer = setTimeout(() => {
-        client.close();
-        reject(Object.assign(new Error(`Timed out connecting to ${this.host}:8009`), { code: "ETIMEDOUT" }));
+        fail(Object.assign(new Error(`Timed out connecting to ${this.host}:8009`), { code: "ETIMEDOUT" }));
       }, 5000);
       client.connect(this.host, () => {
-        connected = true;
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         resolve(client);
       });
-      client.on("error", (err: Error) => {
-        clearTimeout(timer);
-        if (!connected) client.close();
-        reject(err);
+      client.on("error", fail);
+      // The socket can close before connecting without emitting "error"
+      client.client.once("close", () => {
+        fail(Object.assign(new Error(`Connection to ${this.host}:8009 closed before it was ready`), { code: "ECONNRESET" }));
       });
     });
   }
@@ -142,10 +161,15 @@ export class CastClient {
           client.close();
           return reject(err);
         }
-        const session = new CustomAppSession(client, app.createController(JsonController, namespace));
+        const session = new CustomAppSession(
+          client,
+          app.createController(JsonController, namespace),
+          app.session.sessionId
+        );
         // Fires when the receiver app is stopped or closes the connection
         app.on("close", () => session.close());
         client.on("error", () => session.close());
+        client.client.once("close", () => session.close());
         resolve(session);
       });
     });
