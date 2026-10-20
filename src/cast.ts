@@ -28,7 +28,16 @@ export class CustomAppSession {
   /** Stop the receiver app on the Hub (back to the ambient screen), then close the connection. */
   async stopApp(): Promise<void> {
     if (this.closed) return;
-    await new Promise<void>((resolve) => this.client.receiver.stop(this.sessionId, () => resolve()));
+    // castv2 drops the callback if the connection closes first, so also settle on close or after 3 s
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(done, 3000);
+      this.closeHandlers.push(done);
+      this.client.receiver.stop(this.sessionId, done);
+    });
     this.close();
   }
 
