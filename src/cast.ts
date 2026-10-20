@@ -2,11 +2,42 @@ import { createRequire } from "module";
 import { Bonjour } from "bonjour-service";
 
 const require = createRequire(import.meta.url);
-const { Client, DefaultMediaReceiver } = require("castv2-client");
+const { Client, DefaultMediaReceiver, Application, JsonController } = require("castv2-client");
 
 export interface DiscoveredDevice {
   name: string;
   host: string;
+}
+
+/** A running custom receiver app plus the open connection and JSON channel to it. */
+export class CustomAppSession {
+  private closed = false;
+  private closeHandlers: Array<() => void> = [];
+
+  constructor(private client: any, private channel: any) {}
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  send(data: unknown): void {
+    if (!this.closed) this.channel.send(data);
+  }
+
+  onMessage(handler: (data: any) => void): void {
+    this.channel.on("message", handler);
+  }
+
+  onClose(handler: () => void): void {
+    this.closeHandlers.push(handler);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.client.close();
+    for (const handler of this.closeHandlers) handler();
+  }
 }
 
 export class CastClient {
@@ -96,24 +127,45 @@ export class CastClient {
     });
   }
 
+  /**
+   * Launch a custom Web Receiver (or attach to it if it's already running) and open a
+   * JSON channel on `namespace`. The connection stays open until the session is closed.
+   */
+  async launchCustomApp(appId: string, namespace: string): Promise<CustomAppSession> {
+    const client = await this.connect();
+    class CustomApp extends Application {
+      static APP_ID = appId;
+    }
+    return new Promise((resolve, reject) => {
+      client.launch(CustomApp, (err: Error, app: any) => {
+        if (err) {
+          client.close();
+          return reject(err);
+        }
+        const session = new CustomAppSession(client, app.createController(JsonController, namespace));
+        // Fires when the receiver app is stopped or closes the connection
+        app.on("close", () => session.close());
+        client.on("error", () => session.close());
+        resolve(session);
+      });
+    });
+  }
+
   async stop(): Promise<void> {
     const client = await this.connect();
     return new Promise((resolve, reject) => {
       client.getSessions((err: Error, sessions: any[]) => {
-        if (err || !sessions?.length) {
+        // Stop the app itself rather than its media, so custom receivers close too;
+        // leave the Hub's ambient/idle screen alone
+        const active = (sessions ?? []).filter((s) => !s.isIdleScreen);
+        if (err || !active.length) {
           client.close();
           return resolve();
         }
-        client.join(sessions[0], DefaultMediaReceiver, (err: Error, player: any) => {
-          if (err) {
-            client.close();
-            return reject(err);
-          }
-          player.stop((err: Error) => {
-            client.close();
-            if (err) return reject(err);
-            resolve();
-          });
+        client.receiver.stop(active[0].sessionId, (err: Error) => {
+          client.close();
+          if (err) return reject(err);
+          resolve();
         });
       });
     });

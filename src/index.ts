@@ -13,15 +13,51 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { CastClient } from "./cast.js";
+import { CastClient, CustomAppSession } from "./cast.js";
 import { DisplayServer } from "./display.js";
-import { fetchAiDevsStats, buildInteractiveDashboardHtml } from "./aidevs.js";
+import { fetchAiDevsStats, buildInteractiveDashboardHtml, DASHBOARD_NAMESPACE } from "./aidevs.js";
 
 const HUB_IP = process.env.NEST_HUB_IP ?? "";
 const DISPLAY_PORT = parseInt(process.env.DISPLAY_PORT ?? "3333", 10);
+// App ID of the custom Web Receiver (docs/receiver) from the Cast Developer Console
+const CAST_APP_ID = process.env.CAST_APP_ID ?? "";
+const LIVE_REFRESH_MS = 60_000;
 
 const cast = new CastClient(HUB_IP);
 const display = new DisplayServer(DISPLAY_PORT);
+
+let live: { session: CustomAppSession; timer: NodeJS.Timeout } | null = null;
+
+function stopLive(): void {
+  if (!live) return;
+  clearInterval(live.timer);
+  live.session.close();
+  live = null;
+}
+
+/** Launch the receiver and keep pushing fresh stats to it while this server runs. */
+async function startLiveDashboard(apiKey: string) {
+  stopLive();
+  const session = await cast.launchCustomApp(CAST_APP_ID, DASHBOARD_NAMESPACE);
+  const push = async () => {
+    // Send only what the dashboard renders; the raw API response echoes the API key
+    const { points, secrets, days, email } = await fetchAiDevsStats(apiKey);
+    session.send({ type: "aidevs", stats: { points, secrets, days, email } });
+    return { points, secrets, days };
+  };
+  session.onMessage((msg) => {
+    if (msg?.type === "ready") push().catch((e) => console.error("[google-hub-mcp] push failed:", e));
+  });
+  const timer = setInterval(() => {
+    push().catch((e) => console.error("[google-hub-mcp] push failed:", e));
+  }, LIVE_REFRESH_MS);
+  session.onClose(() => {
+    clearInterval(timer);
+    if (live?.session === session) live = null;
+  });
+  live = { session, timer };
+  return push();
+}
 
 const server = new Server(
   { name: "google-hub-mcp", version: "1.0.0" },
@@ -108,7 +144,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "cast_aidevs_dashboard",
       description:
-        "Fetch AI Devs 4 course progress stats and display a live dashboard on the Nest Hub. Uses the AIDEVS_API_KEY from environment.",
+        "Fetch AI Devs 4 course progress stats and display a live dashboard on the Nest Hub. Uses the AIDEVS_API_KEY from environment. With CAST_APP_ID set it runs the custom receiver and refreshes every minute while this server runs; otherwise it casts a one-off snapshot.",
       inputSchema: { type: "object", properties: {} },
     },
   ],
@@ -157,6 +193,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "stop_cast": {
+        stopLive();
         await cast.stop();
         return text("Cast session stopped.");
       }
@@ -169,6 +206,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "cast_aidevs_dashboard": {
         const key = process.env.AIDEVS_API_KEY ?? "";
         if (!key) throw new Error("AIDEVS_API_KEY is not set in .env");
+        if (CAST_APP_ID) {
+          const stats = await startLiveDashboard(key);
+          return text(
+            `Live AI Devs dashboard running on Nest Hub: ${stats.points} pts · ${stats.secrets} secrets · ${stats.days.length} days. ` +
+              `Refreshes every ${LIVE_REFRESH_MS / 1000} s while this MCP server runs.`
+          );
+        }
         const stats = await fetchAiDevsStats(key);
         // The Default Media Receiver can't render HTML, so screenshot the
         // live page and cast it as an image.

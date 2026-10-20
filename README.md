@@ -147,6 +147,18 @@ The generated page is fixed at 1024×600. For Nest Hub Max, you can increase thi
 
 ---
 
+## Live dashboard (custom Cast receiver)
+
+By default `cast_aidevs_dashboard` casts a static snapshot. For a live page that updates on its own, run your own Cast Web Receiver:
+
+1. Register at the [Cast Developer Console](https://cast.google.com/publish) and add your Hub's serial number as a test device. Then reboot the Hub.
+2. Add a **Custom Receiver** application with the URL `https://<user>.github.io/<repo>/receiver/`. GitHub Pages serves it from `docs/` on `main`.
+3. Put the App ID in `.env` as `CAST_APP_ID`, then restart the MCP server.
+
+The receiver page is generated from `src/aidevs.ts`. Run `npm run build:receiver` after changing the dashboard. The page is served over HTTPS, so it can't fetch the Mac's local HTTP server. Instead, the MCP server pushes stats over the custom Cast channel `urn:x-cast:com.dzienisz.hubdash` every minute while it runs.
+
+---
+
 ## Limitations
 
 - The Cast protocol works over the **local network only** — your Mac and Nest Hub must be on the same Wi-Fi.
