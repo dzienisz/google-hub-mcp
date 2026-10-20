@@ -35,6 +35,7 @@ The server exposes six tools to Claude Code:
 - Node.js 18+
 - Google Nest Hub (1st or 2nd gen) or Nest Hub Max on the **same Wi-Fi** as your Mac
 - Your Mac's firewall must allow inbound connections on `DISPLAY_PORT` (default `3333`)
+  - If that port is already taken (e.g. another Claude Code session is running this server), the display server falls back to the next free port (`3334`, `3335`, … up to 9 above, then any free port). The startup log on stderr shows the port in use. The macOS application firewall allows by app (`node`), not by port, so this normally needs no extra setup — but if you filter by port, open the range too.
 
 ---
 
@@ -143,6 +144,18 @@ The Nest Hub's built-in browser renders standard HTML/CSS. The local display ser
 | Nest Hub Max | 1280 × 800 |
 
 The generated page is fixed at 1024×600. For Nest Hub Max, you can increase this in `src/display.ts`.
+
+---
+
+## Live dashboard (custom Cast receiver)
+
+By default `cast_aidevs_dashboard` casts a static snapshot. For a live page that updates on its own, run your own Cast Web Receiver:
+
+1. Register at the [Cast Developer Console](https://cast.google.com/publish) and add your Hub's serial number as a test device. Then reboot the Hub.
+2. Add a **Custom Receiver** application with the URL `https://<user>.github.io/<repo>/receiver/`. GitHub Pages serves it from `docs/` on `main`.
+3. Put the App ID in `.env` as `CAST_APP_ID`, then restart the MCP server.
+
+The receiver page is generated from `src/aidevs.ts`. Run `npm run build:receiver` after changing the dashboard. The page is served over HTTPS, so it can't fetch the Mac's local HTTP server. Instead, the MCP server pushes stats over the custom Cast channel `urn:x-cast:com.dzienisz.hubdash` every minute while it runs.
 
 ---
 

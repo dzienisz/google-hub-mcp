@@ -1,4 +1,5 @@
 import http from "http";
+import type { AddressInfo } from "net";
 import os from "os";
 import path from "path";
 import fs from "fs/promises";
@@ -26,7 +27,8 @@ export class DisplayServer {
     this.jsonEndpoints.set(urlPath, handler);
   }
 
-  async start(): Promise<void> {
+  // Resolves with the port actually bound, which may differ from the one requested.
+  async start(): Promise<number> {
     await fs.mkdir(this.snapshotDir, { recursive: true });
 
     this.server = http.createServer(async (req, res) => {
@@ -64,8 +66,39 @@ export class DisplayServer {
         });
     });
 
-    return new Promise((resolve) => {
-      this.server!.listen(this.port, "0.0.0.0", () => resolve());
+    this.port = await this.listenFrom(this.port);
+    return this.port;
+  }
+
+  // Several MCP clients can run this server at once, so the preferred port may
+  // already be held by a sibling instance. Walk up to the next free port, and
+  // let the OS pick one if that whole range is taken.
+  private async listenFrom(preferred: number, attempts = 10): Promise<number> {
+    const candidates = Array.from({ length: attempts }, (_, i) => preferred + i).filter((p) => p <= 65535);
+    for (const port of [...candidates, 0]) {
+      try {
+        return await this.listenOn(port);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") throw err;
+      }
+    }
+    throw new Error(`No free port for the display server (tried ${preferred}+)`);
+  }
+
+  private listenOn(port: number): Promise<number> {
+    const server = this.server!;
+    return new Promise((resolve, reject) => {
+      const onError = (err: Error) => {
+        server.off("listening", onListening);
+        reject(err);
+      };
+      const onListening = () => {
+        server.off("error", onError);
+        resolve((server.address() as AddressInfo).port);
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(port, "0.0.0.0");
     });
   }
 
@@ -123,7 +156,8 @@ async function htmlToJpeg(html: string): Promise<Buffer> {
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1024, height: 600 });
-    await page.setContent(html, { waitUntil: "networkidle0" });
+    // Puppeteer 24.4x no longer accepts networkidle* for setContent; "load" still waits for images/fonts
+    await page.setContent(html, { waitUntil: "load" });
     const screenshot = await page.screenshot({ type: "jpeg", quality: 92 });
     return Buffer.from(screenshot);
   } finally {

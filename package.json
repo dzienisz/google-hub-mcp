@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "build:receiver": "tsx scripts/build-receiver.ts",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts"
   },

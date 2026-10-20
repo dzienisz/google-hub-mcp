@@ -2,6 +2,10 @@ const TOTAL_DAYS = 25;
 const TOTAL_POINTS = 25;
 const TOTAL_SECRETS = 30;
 
+// Custom Cast channel the MCP server uses to push stats to the hosted receiver page
+export const DASHBOARD_NAMESPACE = "urn:x-cast:com.dzienisz.hubdash";
+const CAF_RECEIVER_SDK = "https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js";
+
 export interface AiDevsStats {
   points: number;
   secrets: number;
@@ -21,14 +25,19 @@ export async function fetchAiDevsStats(apiKey: string): Promise<AiDevsStats> {
   return data;
 }
 
-export function buildInteractiveDashboardHtml(): string {
-  const serverTime = new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+/**
+ * "http": served by the local display server, polls /api/aidevs.
+ * "cast": static Cast Web Receiver page (docs/receiver), stats are pushed by the sender.
+ */
+export function buildInteractiveDashboardHtml(mode: "http" | "cast" = "http"): string {
+  const serverTime =
+    mode === "cast" ? "--:--" : new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1024">
-<meta http-equiv="refresh" content="60">
+${mode === "cast" ? `<script src="${CAF_RECEIVER_SDK}"></script>` : `<meta http-equiv="refresh" content="60">`}
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Lexend+Deca:wght@400;600;700&family=DM+Mono:wght@400;500&display=swap');
 
@@ -160,7 +169,7 @@ export function buildInteractiveDashboardHtml(): string {
 </style>
 </head>
 <body>
-  <header>
+${mode === "cast" ? `  <!-- CAF expects a media element in the page even when no media is played -->\n  <video hidden muted></video>\n` : ""}  <header>
     <div class="logo-area">
       <div class="logo-dot" id="logo-dot"></div>
       <div class="logo-text">AI Devs 4 · Centrala</div>
@@ -249,21 +258,25 @@ export function buildInteractiveDashboardHtml(): string {
 
     // Render
     function render(stats) {
-      const done = new Set(stats.days.map(Number));
-      const ptsPct  = Math.round((stats.points  / TOTAL_POINTS)  * 100);
-      const secPct  = Math.round((stats.secrets / TOTAL_SECRETS) * 100);
-      const misPct  = Math.round((done.size      / TOTAL_DAYS)    * 100);
+      // Validate everything: in cast mode any sender on the LAN can push a message
+      const count = (v, max) => { const n = Number(v); return Number.isFinite(n) ? Math.min(Math.max(n, 0), max) : 0; };
+      const points = count(stats.points, TOTAL_POINTS), secrets = count(stats.secrets, TOTAL_SECRETS);
+      const done = new Set((Array.isArray(stats.days) ? stats.days : [])
+        .map(Number).filter((d) => Number.isInteger(d) && d >= 1 && d <= TOTAL_DAYS));
+      const ptsPct  = Math.round((points    / TOTAL_POINTS)  * 100);
+      const secPct  = Math.round((secrets   / TOTAL_SECRETS) * 100);
+      const misPct  = Math.round((done.size / TOTAL_DAYS)    * 100);
 
-      document.getElementById('pts').innerHTML = stats.points + '<span>/' + TOTAL_POINTS + '</span>';
-      document.getElementById('sec').innerHTML = stats.secrets + '<span>/' + TOTAL_SECRETS + '</span>';
+      document.getElementById('pts').innerHTML = points + '<span>/' + TOTAL_POINTS + '</span>';
+      document.getElementById('sec').innerHTML = secrets + '<span>/' + TOTAL_SECRETS + '</span>';
       document.getElementById('days-hd').innerHTML = done.size + '<span>/' + TOTAL_DAYS + '</span>';
-      document.getElementById('pts-val').textContent = stats.points + '/' + TOTAL_POINTS + ' · ' + ptsPct + '%';
-      document.getElementById('sec-val').textContent = stats.secrets + '/' + TOTAL_SECRETS + ' · ' + secPct + '%';
+      document.getElementById('pts-val').textContent = points + '/' + TOTAL_POINTS + ' · ' + ptsPct + '%';
+      document.getElementById('sec-val').textContent = secrets + '/' + TOTAL_SECRETS + ' · ' + secPct + '%';
       document.getElementById('mis-val').textContent = done.size + '/' + TOTAL_DAYS + ' · ' + misPct + '%';
       document.getElementById('pts-bar').style.width = ptsPct + '%';
       document.getElementById('sec-bar').style.width = secPct + '%';
       document.getElementById('mis-bar').style.width = misPct + '%';
-      document.getElementById('footer-note').textContent = 'hub.ag3nts.org · ' + stats.email.split('@')[0];
+      document.getElementById('footer-note').textContent = 'hub.ag3nts.org · ' + String(stats.email || '').split('@')[0];
 
       const grid = document.getElementById('mission-grid');
       grid.innerHTML = '';
@@ -283,8 +296,15 @@ export function buildInteractiveDashboardHtml(): string {
         .map(d => '<span class="recent-badge">Day ' + d + '</span>').join('');
     }
 
-    // Data fetch
     const dot = document.getElementById('logo-dot');
+${mode === "cast" ? castDataSource() : httpDataSource()}
+  </script>
+</body>
+</html>`;
+}
+
+function httpDataSource(): string {
+  return `
     async function refresh() {
       dot.classList.add('refreshing');
       try {
@@ -295,8 +315,37 @@ export function buildInteractiveDashboardHtml(): string {
     }
 
     refresh();
-    setInterval(refresh, 30000);
-  </script>
-</body>
-</html>`;
+    setInterval(refresh, 30000);`;
+}
+
+// The page runs on an HTTPS host, so it can't fetch the Mac's plain-HTTP server;
+// the MCP server pushes stats over a custom Cast channel instead.
+function castDataSource(): string {
+  return `
+    const NS = '${DASHBOARD_NAMESPACE}';
+    const context = cast.framework.CastReceiverContext.getInstance();
+    const footer = document.getElementById('footer-note');
+    footer.textContent = 'waiting for data…';
+
+    context.addCustomMessageListener(NS, (event) => {
+      const msg = event.data || {};
+      if (msg.type !== 'aidevs' || !msg.stats) return;
+      render(msg.stats);
+      footer.textContent += ' · updated ' + new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+      dot.classList.add('refreshing');
+      setTimeout(() => dot.classList.remove('refreshing'), 600);
+    });
+
+    // Ask each new sender for fresh stats, so data sent before this page loaded isn't lost
+    context.addEventListener(cast.framework.system.EventType.SENDER_CONNECTED, (event) => {
+      context.sendCustomMessage(NS, event.senderId, { type: 'ready' });
+    });
+
+    const options = new cast.framework.CastReceiverOptions();
+    options.customNamespaces = { [NS]: cast.framework.system.MessageType.JSON };
+    options.disableIdleTimeout = true;
+    options.skipPlayersLoad = true;
+    options.uiConfig = new cast.framework.ui.UiConfig();
+    options.uiConfig.touchScreenOptimizedApp = true;
+    context.start(options);`;
 }
