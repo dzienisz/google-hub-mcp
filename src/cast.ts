@@ -4,9 +4,41 @@ import { Bonjour } from "bonjour-service";
 const require = createRequire(import.meta.url);
 const { Client, DefaultMediaReceiver, Application, JsonController } = require("castv2-client");
 
+// Launching loads the receiver page on the Hub (~3 s for ours); plain requests answer in under 1 s
+const LAUNCH_TIMEOUT_MS = 20_000;
+const REQUEST_TIMEOUT_MS = 10_000;
+
 /** castv2 nulls its socket once the connection closes, after which close() throws. */
 function closeClient(client: any): void {
   if (client.client?.socket) client.close();
+}
+
+/**
+ * Run a castv2 request on a connected client. castv2 drops a request's callback when the
+ * connection closes first, so also settle on close, error or timeout. The connection is
+ * closed afterwards unless `keepOpen` is set and the request succeeded.
+ */
+function castRequest<T>(
+  client: any,
+  timeoutMs: number,
+  run: (done: (err: Error | null, value?: T) => void) => void,
+  keepOpen = false
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (err: Error | null, value?: T) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err || !keepOpen) closeClient(client);
+      if (err) reject(err);
+      else resolve(value as T);
+    };
+    const timer = setTimeout(() => done(new Error(`Cast request timed out after ${timeoutMs / 1000} s`)), timeoutMs);
+    client.client.once("close", () => done(new Error("Cast connection closed before the request finished")));
+    client.on("error", (err: Error) => done(err));
+    run(done);
+  });
 }
 
 export interface DiscoveredDevice {
@@ -135,22 +167,15 @@ export class CastClient {
 
   async castMedia(url: string, contentType: string): Promise<void> {
     const client = await this.connect();
-    return new Promise((resolve, reject) => {
+    return castRequest<void>(client, LAUNCH_TIMEOUT_MS, (done) => {
       client.launch(DefaultMediaReceiver, (err: Error, player: any) => {
-        if (err) {
-          client.close();
-          return reject(err);
-        }
+        if (err) return done(err);
         const media = {
           contentId: url,
           contentType,
           streamType: "BUFFERED",
         };
-        player.load(media, { autoplay: true }, (err: Error) => {
-          client.close();
-          if (err) return reject(err);
-          resolve();
-        });
+        player.load(media, { autoplay: true }, (err: Error) => done(err));
       });
     });
   }
@@ -164,54 +189,41 @@ export class CastClient {
     class CustomApp extends Application {
       static APP_ID = appId;
     }
-    return new Promise((resolve, reject) => {
-      client.launch(CustomApp, (err: Error, app: any) => {
-        if (err) {
-          client.close();
-          return reject(err);
-        }
-        const session = new CustomAppSession(
-          client,
-          app.createController(JsonController, namespace),
-          app.session.sessionId
-        );
-        // Fires when the receiver app is stopped or closes the connection
-        app.on("close", () => session.close());
-        client.on("error", () => session.close());
-        client.client.once("close", () => session.close());
-        resolve(session);
-      });
-    });
+    const app = await castRequest<any>(
+      client,
+      LAUNCH_TIMEOUT_MS,
+      (done) => client.launch(CustomApp, (err: Error, app: any) => done(err, app)),
+      true
+    );
+    const session = new CustomAppSession(
+      client,
+      app.createController(JsonController, namespace),
+      app.session.sessionId
+    );
+    // Fires when the receiver app is stopped or closes the connection
+    app.on("close", () => session.close());
+    client.on("error", () => session.close());
+    client.client.once("close", () => session.close());
+    return session;
   }
 
   async stop(): Promise<void> {
     const client = await this.connect();
-    return new Promise((resolve, reject) => {
+    return castRequest<void>(client, REQUEST_TIMEOUT_MS, (done) => {
       client.getSessions((err: Error, sessions: any[]) => {
         // Stop the app itself rather than its media, so custom receivers close too;
         // leave the Hub's ambient/idle screen alone
         const active = (sessions ?? []).filter((s) => !s.isIdleScreen);
-        if (err || !active.length) {
-          client.close();
-          return resolve();
-        }
-        client.receiver.stop(active[0].sessionId, (err: Error) => {
-          client.close();
-          if (err) return reject(err);
-          resolve();
-        });
+        if (err || !active.length) return done(null);
+        client.receiver.stop(active[0].sessionId, (err: Error) => done(err));
       });
     });
   }
 
   async getStatus(): Promise<object> {
     const client = await this.connect();
-    return new Promise((resolve, reject) => {
-      client.getStatus((err: Error, status: any) => {
-        client.close();
-        if (err) return reject(err);
-        resolve(status);
-      });
+    return castRequest<object>(client, REQUEST_TIMEOUT_MS, (done) => {
+      client.getStatus((err: Error, status: any) => done(err, status));
     });
   }
 }
